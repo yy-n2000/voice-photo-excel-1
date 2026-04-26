@@ -521,77 +521,54 @@ function toBuffer(dataUrl){
   return arr.buffer;
 }
 
-// ExcelJS EMU单位换算常量
-// 1 列宽单位 ≈ 9.525 像素 (96dpi)；1 行高单位 (pt) = 96/72 像素
-// ExcelJS addImage extent 使用的是"屏幕像素"，不是 EMU
-// 关键：行高 280pt → 280 * (96/72) ≈ 373 像素；列宽 60 → 60 * 9.525 ≈ 572 像素
-// 为确保不溢出，图片尺寸留 8px 内边距
-const COL_WIDTH_PX = col => col * 9.525;   // 列宽→像素
-const ROW_HEIGHT_PX = pt => pt * (96 / 72); // 行高pt→像素
-
+// 替换原有的 exportExcel 函数
 async function exportExcel(){
   if(!records.length) return;
   showToast('正在生成Excel，请稍候...');
   document.getElementById('exportBtn').disabled=true;
   try{
     const wb=new ExcelJS.Workbook(), ws=wb.addWorksheet('记录');
-
-    // 列宽（字符单位）
-    const colWidths = [50, 55, 55, 55];
-    colWidths.forEach((w,i)=>{ ws.getColumn(i+1).width=w; });
-
+    [50,60,60,60].forEach((w,i)=>{ws.getColumn(i+1).width=w;});
     const h=ws.getRow(1);
     h.values=['语音文字','图片1','图片2','图片3']; h.height=22;
     h.font={bold:true,color:{argb:'FFFFFFFF'},size:12};
     h.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF4472C4'}};
     h.alignment={vertical:'middle',horizontal:'center'};
 
-    const ROW_HEIGHT_PT = 280; // 行高（磅）
-    const PADDING = 8;         // 图片与单元格边框间距（像素）
+    // 【修改点1】设置更保守的物理像素上限。
+    // 行高 280 约等于 373 像素。我们将最大高度收缩到 320，确保底部有充足的安全边距。
+    const MAX_W = 380; 
+    const MAX_H = 320; 
 
     for(let i=0;i<records.length;i++){
-      const row=records[i], ri=i+2, er=ws.getRow(ri);
-      er.height = ROW_HEIGHT_PT;
-
-      // 文字列
-      const tc=ws.getCell(ri,1);
-      tc.value=row.text||'';
-      tc.alignment={vertical:'middle',wrapText:true};
-      tc.font={size:11};
-
+      const row=records[i],ri=i+2,er=ws.getRow(ri);
+      er.height=280;
+      const tc=ws.getCell(ri,1); tc.value=row.text||''; tc.alignment={vertical:'middle',wrapText:true}; tc.font={size:11};
+      
       if(Array.isArray(row.images)){
         for(let j=0;j<Math.min(row.images.length,3);j++){
           const url=row.images[j];
           if(!url||!url.includes('base64,')) continue;
           try{
-            const imgData=await fitToCell(url);
-            if(!imgData) continue;
+            const imgData = await fitToCell(url);
+            if (!imgData) continue;
 
-            // 单元格可用像素（减去内边距）
-            const cellW = COL_WIDTH_PX(colWidths[j+1]) - PADDING * 2;
-            const cellH = ROW_HEIGHT_PX(ROW_HEIGHT_PT) - PADDING * 2;
-
-            // 等比缩放，保证不超出单元格
-            const scale = Math.min(cellW / imgData.width, cellH / imgData.height, 1);
+            const scale = Math.min(MAX_W / imgData.width, MAX_H / imgData.height);
             const finalW = Math.round(imgData.width * scale);
             const finalH = Math.round(imgData.height * scale);
 
-            const id=wb.addImage({buffer:toBuffer(imgData.base64), extension:'jpeg'});
-
-            // ✅ 使用 tl+br 两点定位（absolute模式），完全限定在单元格内，不会溢出到下一行
-            // tl: 从当前行列的起点 + padding 偏移
-            // br: tl + 图片实际像素尺寸（ExcelJS 会换算为 EMU）
-            ws.addImage(id, {
-              tl: { col: j + 1 + 0.05, row: ri - 1 + 0.05 },
-              br: { col: j + 1 + 0.05 + finalW / COL_WIDTH_PX(colWidths[j+1]),
-                    row: ri - 1 + 0.05 + finalH / ROW_HEIGHT_PX(ROW_HEIGHT_PT) },
-              editAs: 'absolute'  // ← 关键：absolute 模式，图片绝对定位，不随行高变化
+            const id=wb.addImage({buffer:toBuffer(imgData.base64),extension:'jpeg'});
+            
+            ws.addImage(id,{
+              // 【修改点2】将偏移量改小 (0.05 -> 0.02)，防止图片被向下推挤出边框
+              tl:{col: j + 1 + 0.02, row: ri - 1 + 0.02}, 
+              ext:{width: finalW, height: finalH},
+              editAs:'oneCell' 
             });
           }catch(e){console.error('图片跳过',e);}
         }
       }
     }
-
     const buf=await wb.xlsx.writeBuffer();
     saveAs(new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),
       `语音拍照记录_${new Date().toLocaleDateString('zh-CN').replace(/\//g,'')}.xlsx`);
@@ -599,7 +576,6 @@ async function exportExcel(){
   }catch(e){showToast('导出失败：'+e.message);console.error(e);}
   finally{document.getElementById('exportBtn').disabled=false;}
 }
-
 // ===================== Toast =====================
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
 </script>
